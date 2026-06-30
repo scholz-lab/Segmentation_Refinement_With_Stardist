@@ -1,0 +1,6 @@
+napari[all]
+stardist
+tensorflow
+tifffile
+scikit-image
+magicgui
