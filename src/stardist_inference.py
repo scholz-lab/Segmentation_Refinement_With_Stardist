@@ -44,8 +44,8 @@ def load_model(model_name="3D_demo"):
 
 
 def run_inference(
-    volume,
     model,
+    volume,
     prob_thresh=None,
     nms_thresh=None,
 ):

@@ -1,5 +1,6 @@
 import numpy as np
 from magicgui import magicgui
+from stardist_inference import run_inference
 import napari
 
 
@@ -38,25 +39,26 @@ def open_viewer(images, labels):
 
 
 def create_stardist_widget(model, viewer):
-    @magicgui(call_button="Run StarDist (Current Frame)")
+    @magicgui(call_button="Run StarDist (New Layer)")
     def stardist_widget(image_layer: napari.layers.Image):
-        # 1. Get the current slider position (the frame index)
-        # viewer.dims.current_step[0] gives the current index of the N dimension
+        # 1. Get the current slider position
         frame_idx = viewer.dims.current_step[0]
 
-        # 2. Extract only the 3D volume for that frame
-        # image_layer.data is (N, Z, Y, X), so we grab image_layer.data[frame_idx]
+        # 2. Extract only the 3D volume for the current frame
         current_volume = image_layer.data[frame_idx]
 
         print(f"Running inference on frame {frame_idx}...")
 
-        # 3. Run inference using your existing stardist_inference logic
-        # Make sure this function matches the one you imported
-        from src.stardist_inference import run_inference
+        # 3. Run inference
         labels = run_inference(model, current_volume)
 
-        # 4. Add the labels to the viewer
-        # We name it based on the frame index so you know which is which
-        viewer.add_labels(labels, name=f"Labels_Frame_{frame_idx}")
+        # 4. Create a new layer with a unique name
+        # We include the frame index in the name so you know what it is
+        new_layer_name = f"Labels_Frame_{frame_idx}"
+
+        # Add the new labels as a fresh layer
+        viewer.add_labels(labels, name=new_layer_name)
+
+        print(f"Created new layer: {new_layer_name}")
 
     return stardist_widget

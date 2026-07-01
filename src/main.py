@@ -27,7 +27,7 @@ def main():
     viewer.dims.ndisplay = 3
 
     # Create the widget and add it to the right side
-    widget = create_stardist_widget(model, stack)
+    widget = create_stardist_widget(model, viewer)
     viewer.window.add_dock_widget(widget, area='right')
 
     print("\nNapari launched.")
