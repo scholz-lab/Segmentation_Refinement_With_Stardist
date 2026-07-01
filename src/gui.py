@@ -1,30 +1,62 @@
-from magicgui import magic_factory
+import numpy as np
+from magicgui import magicgui
 import napari
-from .processing import run_stardist, integrate_labels, load_model
-
-model = load_model()
 
 
-@magic_factory(call_button="Run Coarse Segmentation",
-               prob_thresh={"min": 0.1, "max": 0.9, "step": 0.1},
-               nms_thresh={"min": 0.1, "max": 0.9, "step": 0.1})
-def stardist_widget(viewer: napari.Viewer,
-                    image_layer: napari.layers.Image,
-                    prob_thresh: float = 0.5,
-                    nms_thresh: float = 0.3):
-    def run():
-        labels = run_stardist(model, image_layer.data, prob_thresh, nms_thresh)
-        viewer.add_labels(labels, name="Global_Labels")
+def open_viewer(images, labels):
 
-    return run
+    names = list(images.keys())
+
+    image_stack = np.stack(
+        [images[name] for name in names],
+        axis=0,
+    )
+
+    label_stack = np.stack(
+        [labels[name] for name in names],
+        axis=0,
+    )
+
+    viewer = napari.Viewer(title="Neuron Segmentation")
+
+    viewer.add_image(
+        image_stack,
+        name="Images",
+    )
+
+    viewer.add_labels(
+        label_stack,
+        name="Labels",
+    )
+
+    print("\nVolume index:")
+
+    for i, name in enumerate(names):
+        print(f"{i} -> {name}")
+
+    return viewer
 
 
-@magic_factory(call_button="Integrate Local to Global")
-def integration_widget(viewer: napari.Viewer,
-                       global_layer: napari.layers.Labels,
-                       local_layer: napari.layers.Labels):
-    def integrate():
-        global_layer.data = integrate_labels(global_layer.data, local_layer.data)
-        viewer.layers.remove(local_layer)  # Remove temp layer after merge
+def create_stardist_widget(model, viewer):
+    @magicgui(call_button="Run StarDist (Current Frame)")
+    def stardist_widget(image_layer: napari.layers.Image):
+        # 1. Get the current slider position (the frame index)
+        # viewer.dims.current_step[0] gives the current index of the N dimension
+        frame_idx = viewer.dims.current_step[0]
 
-    return integrate
+        # 2. Extract only the 3D volume for that frame
+        # image_layer.data is (N, Z, Y, X), so we grab image_layer.data[frame_idx]
+        current_volume = image_layer.data[frame_idx]
+
+        print(f"Running inference on frame {frame_idx}...")
+
+        # 3. Run inference using your existing stardist_inference logic
+        # Make sure this function matches the one you imported
+        from src.stardist_inference import run_inference
+        labels = run_inference(model, current_volume)
+
+        # 4. Add the labels to the viewer
+        # We name it based on the frame index so you know which is which
+        viewer.add_labels(labels, name=f"Labels_Frame_{frame_idx}")
+
+    return stardist_widget
