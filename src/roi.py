@@ -1,91 +1,64 @@
 """
 roi.py
 ------
-Handles everything related to ROI selection:
-  - Converting a napari Shapes rectangle into a TRUE 3D bounding box
-  - Cropping a 3D volume to that bounding box
-  - Storing the bbox so the merge step knows where to paste back
+Combines two 2D rectangle selections into one 3D bounding box:
+  - XY view rectangle → gives Y and X extent
+  - YZ view rectangle → gives Z and Y extent (Y used as cross-check)
 
-When you draw a rectangle in napari's 3D view, each vertex already has
-a z coordinate. We use the actual min/max z from those vertices directly
-— no center+margin guessing needed.
-
-The margin is still available for y and x padding if you want extra context
-around the drawn area.
+Nothing here knows about StarDist or the GUI.
 """
 import numpy as np
 
 
 class ROIManager:
-    def __init__(self, margin: int = 0):
-        """
-        Parameters
-        ----------
-        margin : int
-            Extra voxels added around the ROI in ALL directions (z, y, x).
-            Useful because StarDist performs better with a little context
-            around the neurons.
-        """
-        self.margin = margin
-        self.last_bbox = None   # saved after each crop so merge can use it
+    def __init__(self):
+        self.last_bbox = None  # saved after each crop for merge step
 
-    def shapes_to_bbox(
+    def bbox_from_two_views(
         self,
-        shape_data: np.ndarray,
-        volume_shape: tuple,
+        xy_shapes_layer,    # rectangle drawn in XY view
+        yz_shapes_layer,    # rectangle drawn in YZ view
+        volume_shape: tuple,  # (z, y, x) of one 3D volume
     ) -> dict:
         """
-        Convert a single napari Shapes rectangle drawn in 3D view into a
-        true 3D bounding box.
+        Build a 3D bounding box from two 2D rectangle selections.
 
-        napari vertex layout for a 4D stack (N, z, y, x):
-            shape_data has shape (4, 4)
-            columns: [frame, z, y, x]
-
-        napari vertex layout for a 3D volume (z, y, x):
-            shape_data has shape (4, 3)
-            columns: [z, y, x]
-
-        The min/max of z, y, x are taken directly from the drawn vertices.
-        The margin is added around all sides and clipped to the volume bounds.
+        XY view rectangle vertices: columns are (y, x)
+        YZ view rectangle vertices: columns are (y, z)
+            → we read Z from this view
 
         Parameters
         ----------
-        shape_data   : (4, ndim) array of rectangle vertices from napari
-        volume_shape : shape of ONE 3D volume (z, y, x)
+        xy_shapes_layer : napari Shapes layer drawn in XY view
+        yz_shapes_layer : napari Shapes layer drawn in YZ view
+        volume_shape    : (z, y, x)
 
         Returns
         -------
-        bbox : dict with keys z0, z1, y0, y1, x0, x1, slices
+        bbox : dict with z0,z1,y0,y1,x0,x1 and slices
         """
-        coords = np.array(shape_data)
+        if len(xy_shapes_layer.data) == 0:
+            raise RuntimeError("No rectangle drawn in the XY view yet.")
+        if len(yz_shapes_layer.data) == 0:
+            raise RuntimeError("No rectangle drawn in the YZ view yet.")
+
         nz, ny, nx = volume_shape
 
-        if coords.shape[1] == 4:
-            # 4D stack — columns are (frame, z, y, x)
-            z_coords = coords[:, 1]
-            y_coords = coords[:, 2]
-            x_coords = coords[:, 3]
-        else:
-            # 3D volume — columns are (z, y, x)
-            z_coords = coords[:, 0]
-            y_coords = coords[:, 1]
-            x_coords = coords[:, 2]
+        # ── XY view: get Y and X ──────────────────────────────────────────
+        # XY viewer is 2D with axes (y, x)
+        # vertices shape: (4, 2) → columns: (y, x)
+        xy_verts = np.array(xy_shapes_layer.data[-1])
+        y0 = max(0,  int(np.floor(xy_verts[:, 0].min())))
+        y1 = min(ny, int(np.ceil( xy_verts[:, 0].max())))
+        x0 = max(0,  int(np.floor(xy_verts[:, 1].min())))
+        x1 = min(nx, int(np.ceil( xy_verts[:, 1].max())))
 
-        # Use actual min/max from the drawn rectangle — true 3D bbox
-        z0 = int(np.floor(z_coords.min())) - self.margin
-        z1 = int(np.ceil( z_coords.max())) + self.margin + 1
-
-        y0 = int(np.floor(y_coords.min())) - self.margin
-        y1 = int(np.ceil( y_coords.max())) + self.margin + 1
-
-        x0 = int(np.floor(x_coords.min())) - self.margin
-        x1 = int(np.ceil( x_coords.max())) + self.margin + 1
-
-        # Clip to volume bounds so we never go out of range
-        z0 = max(0,  z0);  z1 = min(nz, z1)
-        y0 = max(0,  y0);  y1 = min(ny, y1)
-        x0 = max(0,  x0);  x1 = min(nx, x1)
+        # ── YZ view: get Z ────────────────────────────────────────────────
+        # YZ viewer is 2D with axes (z, y)
+        # vertices shape: (4, 2) → columns: (z, y)
+        yz_verts = np.array(yz_shapes_layer.data[-1])
+        z0 = max(0,  int(np.floor(yz_verts[:, 0].min())))
+        z1 = min(nz, int(np.ceil( yz_verts[:, 0].max())))
 
         bbox = dict(
             z0=z0, z1=z1,
@@ -93,30 +66,18 @@ class ROIManager:
             x0=x0, x1=x1,
             slices=(slice(z0, z1), slice(y0, y1), slice(x0, x1)),
         )
+        self.last_bbox = bbox
 
-        self.last_bbox = bbox   # save for merge step later
-
-        print(f"  3D bbox: z[{z0}:{z1}] y[{y0}:{y1}] x[{x0}:{x1}]")
+        print(f"  3D bbox from two views:")
+        print(f"    XY view → y[{y0}:{y1}] x[{x0}:{x1}]")
+        print(f"    YZ view → z[{z0}:{z1}]")
+        print(f"    Full 3D → z[{z0}:{z1}] y[{y0}:{y1}] x[{x0}:{x1}]")
         return bbox
 
-    def crop_volume(
-        self,
-        volume: np.ndarray,
-        bbox: dict,
-    ) -> np.ndarray:
+    def crop_volume(self, volume: np.ndarray, bbox: dict) -> np.ndarray:
         """
-        Crop a 3D volume (z, y, x) using the bounding box.
-
-        Parameters
-        ----------
-        volume : ndarray shape (z, y, x)
-        bbox   : dict returned by shapes_to_bbox
-
-        Returns
-        -------
-        cropped : ndarray shape (z1-z0, y1-y0, x1-x0)
+        Crop a 3D volume (z, y, x) using bbox from bbox_from_two_views.
         """
-        s = bbox["slices"]
-        crop = volume[s]
+        crop = volume[bbox["slices"]]
         print(f"  Cropped shape: {crop.shape}")
         return crop

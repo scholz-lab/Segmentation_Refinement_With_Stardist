@@ -1,215 +1,144 @@
-"""
-gui.py
-------
-Napari viewer setup and dock widgets:
-  - Full volume StarDist segmentation
-  - ROI-only StarDist segmentation
-"""
 import numpy as np
 import napari
-from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel,
-    QPushButton, QDoubleSpinBox,
-    QHBoxLayout, QGroupBox,
-)
-from qtpy.QtCore import Qt
-
+from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QDoubleSpinBox, QHBoxLayout, QGroupBox
 from stardist_inference import run_inference
 from roi import ROIManager
+from orthoviewer import OrthoViewer
 
 
 def open_viewer(stack: np.ndarray, names: list, model) -> napari.Viewer:
-    viewer = napari.Viewer(title="Neuron Segmentation")
+    """
+    Open orthogonal viewer with 4 synchronized napari windows in 2x2 grid.
 
-    image_layer = viewer.add_image(stack, name="Image_Stack")
+    Parameters
+    ----------
+    stack : np.ndarray
+        Image stack, shape (T, Z, Y, X) or (Z, Y, X)
+    names : list
+        Volume names/labels
+    model
+        StarDist model for inference
 
-    global_labels = np.zeros(stack.shape, dtype=np.int32)
-    viewer.add_labels(global_labels, name="Global_Labels")
+    Returns
+    -------
+    napari.Viewer
+        3D viewer instance (control panel will be docked here)
+    """
+    # Initialize OrthoViewer with 4 synchronized separate windows
+    ortho = OrthoViewer(stack, names=names, model=model)
+    v3d, v_xy, v_yz, v_xz = ortho.get_viewers()
 
-    viewer.add_shapes(
-        name="ROI",
-        ndim=stack.ndim,
-        edge_color="yellow",
-        face_color="transparent",
-    )
+    # Add labels layer to 3D viewer for segmentation results
+    v3d.add_labels(np.zeros(stack.shape, dtype=np.int32), name="Segmentation")
 
-    viewer.dims.ndisplay = 3
-    viewer.window.resize(1600, 950)
+    # Build control panel and dock to 3D viewer
+    roi_manager = ROIManager()
+    panel = _build_panel(ortho, stack, names, model, roi_manager)
+    v3d.window.add_dock_widget(panel, area="right", name="StarDist Controls")
 
-    roi_manager = ROIManager(margin=8)
-
-    widget = _build_panel(viewer, image_layer, stack, names, model, roi_manager)
-    viewer.window.add_dock_widget(widget, area="right", name="StarDist Controls")
-
-    print("Napari open.")
-    print("  Top slider  -> switch volume")
-    print("  Drag        -> rotate 3D view")
-    print("  ROI layer   -> draw rectangle, then click Run StarDist on ROI")
-
-    return viewer
+    return v3d
 
 
-def _build_panel(viewer, image_layer, stack, names, model, roi_manager):
+def _build_panel(ortho: OrthoViewer, stack, names, model, roi_manager):
+    """Build control panel with StarDist and viewer options."""
+    v3d, v_xy, v_yz, v_xz = ortho.get_viewers()
 
     panel = QWidget()
     layout = QVBoxLayout()
-    layout.setAlignment(Qt.AlignTop)
     panel.setLayout(layout)
 
-    # ── Full volume ───────────────────────────────────────────────────────
-    full_box = QGroupBox("Full Volume")
-    full_layout = QVBoxLayout()
-    full_box.setLayout(full_layout)
+    # Title
+    title = QLabel("🔬 StarDist Controls")
+    layout.addWidget(title)
 
-    full_status = QLabel("Not run yet.")
-    full_status.setWordWrap(True)
-    full_layout.addWidget(full_status)
+    # Info label
+    info_label = QLabel("Double-click to center\non any viewer")
+    info_label.setStyleSheet("color: #666; font-size: 10px;")
+    layout.addWidget(info_label)
 
-    full_btn = QPushButton("Run StarDist on current volume")
-    full_btn.setStyleSheet("padding: 6px;")
-    full_layout.addWidget(full_btn)
+    # Slicing visualization toggle
+    slicing_btn = QPushButton("Toggle Slicing Planes")
+    slicing_btn.setCheckable(True)
+    slicing_btn.setChecked(False)
 
-    layout.addWidget(full_box)
+    def toggle_slicing(checked):
+        ortho.toggle_slicing(checked)
 
-    # ── ROI ───────────────────────────────────────────────────────────────
-    roi_box = QGroupBox("ROI Segmentation")
-    roi_layout = QVBoxLayout()
-    roi_box.setLayout(roi_layout)
+    slicing_btn.clicked.connect(toggle_slicing)
+    layout.addWidget(slicing_btn)
 
-    roi_layout.addWidget(QLabel(
-        "1. Select ROI layer\n"
-        "2. Draw a rectangle around neurons\n"
-        "3. Adjust params and click Run"
-    ))
+    layout.addSpacing(10)
+    layout.addWidget(QLabel("Segmentation:"))
 
-    row1 = QHBoxLayout()
-    row1.addWidget(QLabel("Z margin:"))
-    margin_spin = QDoubleSpinBox()
-    margin_spin.setRange(0, 50)
-    margin_spin.setValue(8)
-    margin_spin.setDecimals(0)
-    row1.addWidget(margin_spin)
-    roi_layout.addLayout(row1)
-
-    row2 = QHBoxLayout()
-    row2.addWidget(QLabel("Prob threshold:"))
-    prob_spin = QDoubleSpinBox()
-    prob_spin.setRange(0.01, 0.99)
-    prob_spin.setSingleStep(0.05)
-    prob_spin.setValue(0.5)
-    prob_spin.setDecimals(2)
-    row2.addWidget(prob_spin)
-    roi_layout.addLayout(row2)
-
-    row3 = QHBoxLayout()
-    row3.addWidget(QLabel("NMS threshold:"))
-    nms_spin = QDoubleSpinBox()
-    nms_spin.setRange(0.01, 0.99)
-    nms_spin.setSingleStep(0.05)
-    nms_spin.setValue(0.3)
-    nms_spin.setDecimals(2)
-    row3.addWidget(nms_spin)
-    roi_layout.addLayout(row3)
-
-    roi_status = QLabel("No ROI run yet.")
-    roi_status.setWordWrap(True)
-    roi_layout.addWidget(roi_status)
-
-    roi_btn = QPushButton("Run StarDist on ROI only")
-    roi_btn.setStyleSheet("padding: 6px;")
-    roi_layout.addWidget(roi_btn)
-
-    layout.addWidget(roi_box)
-
-    # ── Callbacks ─────────────────────────────────────────────────────────
-
-    def run_full():
-        vol_idx = viewer.dims.current_step[0]
-        name = names[vol_idx] if vol_idx < len(names) else str(vol_idx)
-        full_status.setText(f"Running on [{vol_idx}] {name} ...")
-        full_btn.setEnabled(False)
-
-        volume = stack[vol_idx]
-        result = run_inference(model, volume)
-
-        data = viewer.layers["Global_Labels"].data.copy()
-        data[vol_idx] = result
-        viewer.layers["Global_Labels"].data = data
-
-        full_status.setText(
-            f"Done [{vol_idx}] {name}\n"
-            f"Found {int(result.max())} objects."
-        )
-        full_btn.setEnabled(True)
+    # ROI button
+    roi_btn = QPushButton("Run StarDist on ROI (Current zoom)")
+    layout.addWidget(roi_btn)
 
     def run_roi():
-        shapes_layer = viewer.layers["ROI"]
-
-        # Check a rectangle has been drawn
-        if len(shapes_layer.data) == 0:
-            roi_status.setText(
-                "No ROI drawn yet.\n"
-                "Select the ROI layer and draw a rectangle first."
-            )
-            return
-
+        """Run segmentation on current view region."""
         try:
-            roi_manager.margin = int(margin_spin.value())
+            vol_idx = ortho.t_idx
+            volume = stack[vol_idx]
+            z, y, x = ortho.get_current_position()
+            
+            # Define ROI around current center (200x200x200 pixels)
+            roi_size = 100
+            z0 = max(0, z - roi_size)
+            z1 = min(volume.shape[0], z + roi_size)
+            y0 = max(0, y - roi_size)
+            y1 = min(volume.shape[1], y + roi_size)
+            x0 = max(0, x - roi_size)
+            x1 = min(volume.shape[2], x + roi_size)
+            
+            roi = volume[z0:z1, y0:y1, x0:x1]
+            result = run_inference(model, roi)
 
-            # current frame index
-            vol_idx = viewer.dims.current_step[0]
-
-            # single 3D volume for this frame (z, y, x)
-            volume = image_layer.data[vol_idx]
-
-            # shapes_to_bbox takes the last drawn shape's vertex array
-            # and the 3D volume shape (z, y, x)
-            shape_data = shapes_layer.data[-1]   # (4, 4) array: last rectangle
-            bbox = roi_manager.shapes_to_bbox(shape_data, volume.shape)
-
-            # crop using the slices stored inside bbox
-            roi = roi_manager.crop_volume(volume, bbox)
-
+            v3d.add_labels(
+                result,
+                name=f"StarDist_ROI_{vol_idx}",
+                translate=[z0, y0, x0],
+                opacity=0.5
+            )
+            print(f"✓ Segmented ROI: Z[{z0}:{z1}], Y[{y0}:{y1}], X[{x0}:{x1}]")
         except Exception as e:
-            roi_status.setText(f"ROI error: {e}")
-            return
+            print(f"Error during segmentation: {e}")
 
-        roi_status.setText(
-            f"ROI: z[{bbox['z0']}:{bbox['z1']}] "
-            f"y[{bbox['y0']}:{bbox['y1']}] "
-            f"x[{bbox['x0']}:{bbox['x1']}]\n"
-            f"Shape: {roi.shape}\n"
-            f"Running StarDist..."
-        )
-        roi_btn.setEnabled(False)
-
-        result = run_inference(
-            model,
-            roi,
-            prob_thresh=prob_spin.value(),
-            nms_thresh=nms_spin.value(),
-        )
-
-        # unique layer name per run so you can compare multiple parameter sets
-        layer_name = (
-            f"ROI_Frame{vol_idx}"
-            f"_p{prob_spin.value():.2f}"
-            f"_nms{nms_spin.value():.2f}"
-        )
-
-        # translate places the labels at the correct position in the volume
-        # result is 3D (z,y,x) so translate needs 3 values, not 4
-        translate = [bbox["z0"], bbox["y0"], bbox["x0"]]
-        viewer.add_labels(result, name=layer_name, translate=translate)
-
-        roi_status.setText(
-            f"Done. Found {int(result.max())} objects.\n"
-            f"Layer: {layer_name}\n"
-            "Run again with different params to compare."
-        )
-        roi_btn.setEnabled(True)
-
-    full_btn.clicked.connect(run_full)
     roi_btn.clicked.connect(run_roi)
 
+    # Full volume segmentation
+    full_btn = QPushButton("Run StarDist on Full Volume")
+    layout.addWidget(full_btn)
+
+    def run_full():
+        """Run segmentation on entire volume."""
+        try:
+            vol_idx = ortho.t_idx
+            volume = stack[vol_idx]
+            result = run_inference(model, volume)
+            v3d.add_labels(result, name=f"StarDist_Full_{vol_idx}", opacity=0.5)
+            print(f"✓ Segmented full volume at frame {vol_idx}")
+        except Exception as e:
+            print(f"Error during segmentation: {e}")
+
+    full_btn.clicked.connect(run_full)
+
+    # Position display
+    layout.addSpacing(10)
+    layout.addWidget(QLabel("Position Info:"))
+    pos_label = QLabel("Position: (Z, Y, X) = (-, -, -)")
+    pos_label.setStyleSheet("font-family: monospace; font-size: 11px;")
+    layout.addWidget(pos_label)
+
+    def update_pos(*args):
+        z, y, x = ortho.get_current_position()
+        frame = ortho.t_idx
+        pos_label.setText(f"Frame: {frame} | Z={z:3d}, Y={y:3d}, X={x:3d}")
+
+    for viewer in ortho.get_viewers():
+        viewer.dims.events.current_step.connect(update_pos)
+
+    # Initial position update
+    update_pos()
+
+    layout.addStretch()
     return panel
